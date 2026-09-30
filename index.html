@@ -314,7 +314,6 @@ body.loading .rise{animation-play-state:paused}
     </div>
     <div class="hdr-r">
       <span class="beta">Beta</span>
-      <a class="pill" href="https://www.linkedin.com/in/cj-ceo-vm/" target="_blank" rel="noopener"><svg viewBox="0 0 24 24" aria-label="LinkedIn"><rect width="24" height="24" rx="5" fill="#fff"/><path fill="#0B0B0B" d="M7.1 9.6h2.3V17H7.1zM8.25 6a1.33 1.33 0 1 1 0 2.66 1.33 1.33 0 0 1 0-2.66zM10.9 9.6h2.2v1h.03c.31-.58 1.06-1.2 2.19-1.2 2.34 0 2.78 1.54 2.78 3.55V17h-2.3v-3.6c0-.86-.02-1.96-1.2-1.96-1.2 0-1.38.93-1.38 1.9V17h-2.3z"/></svg><span class="cn">Chirag Joshi</span></a>
     </div>
   </header>
 
@@ -618,63 +617,119 @@ const Globe = (() => {
 /* ================= loading intro: particles morph from fruit to Earth ================= */
 const Loader = (() => {
   const TAU = Math.PI*2, EARTH = 6, SEQ = [[0,0,.42],[1,.64,.92],[2,1.12,1.36],[3,1.54,1.78],[4,1.96,2.2],[5,2.38,2.62],[6,2.82,3.3]];
-  const T_HAND = 3.72, MOVE = .45, T_FADE = 4.12, T_END = 4.9;
-  let el, cv, ctx, W, H, DPR, N, R0, shapes = [], burst, jit, warp, t0 = 0, last = 0, rot = 0, forceEarth = false, handed = false, faded = false, pose = null, opts;
+  const T_HAND = 3.72, MOVE = .45, T_FADE = 4.12, T_END = 4.9, FOOD_S = .6;
+  let el, cv, ctx, W, H, DPR, N, R0, shapes = [], burst, warp, D, t0 = 0, last = 0, rot = 0, forceEarth = false, handed = false, faded = false, pose = null, opts;
   let seed = 1337; const rnd = () => { seed |= 0; seed = seed + 0x6D2B79F5 | 0; let t = Math.imul(seed ^ seed >>> 15, 1 | seed); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0)/4294967296; };
   const clamp = (x, a, b) => Math.max(a, Math.min(b, x)), ease = x => x < .5 ? 4*x*x*x : 1 - Math.pow(-2*x + 2, 3)/2, lerp = (a, b, k) => a + (b - a)*k;
   const smax = (a, b, k) => { const h = clamp(.5 + .5*(a - b)/k, 0, 1); return b + (a - b)*h + k*h*(1 - h); };
   const lit = (x, y, z) => -.45*x + .7*y + .55*z;
   function dir(){ const u = rnd()*2 - 1, th = rnd()*TAU, q = Math.sqrt(1 - u*u); return [q*Math.cos(th), u, q*Math.sin(th)]; }
-  function shape(fn, pal, glow){ const p = new Float32Array(N*3), c = new Uint8Array(N); for (let i = 0; i < N; i++) { const v = fn(i); p[i*3] = v[0]; p[i*3+1] = v[1]; p[i*3+2] = v[2]; c[i] = v[3]; } return {p, c, pal, glow}; }
+  function shape(fn, pal, glow){
+    const p = new Float32Array(N*3), c = new Uint8Array(N), rad = new Float32Array(N);
+    for (let i = 0; i < N; i++) { const v = fn(i); p[i*3] = v[0]; p[i*3+1] = v[1]; p[i*3+2] = v[2]; c[i] = v[3]; rad[i] = Math.sqrt(v[0]*v[0] + v[1]*v[1] + v[2]*v[2]); }
+    return {p, c, pal, glow, rad};
+  }
   const shade = (L, hi, mid, a, b) => L > .8 ? hi : (L > .25 ? mid : (rnd() < .5 ? a : b));
   function build(){
-    // pear: two lobes blended into one smooth body, with stem and leaf
-    const pearR = y => smax(Math.sqrt(Math.max(0, .41 - (y + .3)*(y + .3))), Math.sqrt(Math.max(0, .137 - (y - .42)*(y - .42))), .22);
-    shapes.push(shape(() => {
+    // One shared set of rays. Every shape answers the same ray with its own surface point,
+    // so morphing slides each particle along its ray instead of throwing it across the middle.
+    D = new Float32Array(N*3);
+    for (let i = 0; i < N; i++) { const d = dir(); D[i*3] = d[0]; D[i*3+1] = d[1]; D[i*3+2] = d[2]; }
+    // sample a surface of revolution at even surface density: a band of height dy
+    // carries area proportional to r*sqrt(1+r'^2), which is what keeps poles from spiking
+    function profile(rf, y0, y1){
+      const K = 512, cum = new Float32Array(K + 1), h = (y1 - y0)/K;
+      for (let j = 0; j < K; j++) {
+        const y = y0 + (j + .5)*h, r = Math.max(0, rf(y)), dr = (rf(y + h*.5) - rf(y - h*.5))/h;
+        cum[j+1] = cum[j] + Math.max(1e-4, r*Math.sqrt(1 + dr*dr));
+      }
+      const tot = cum[K];
+      return u => { const g = u*tot; let lo = 0, hi = K; while (lo < hi) { const m = (lo + hi) >> 1; if (cum[m] < g) lo = m + 1; else hi = m; } return y0 + lo/K*(y1 - y0); };
+    }
+    // pear: two lobes overlapped enough to read as one body, not a snowman
+    const pearR = y => smax(Math.sqrt(Math.max(0, .385 - (y + .32)*(y + .32))), Math.sqrt(Math.max(0, .13 - (y - .34)*(y - .34))), .3);
+    const pearY = profile(pearR, -.95, .73);
+    shapes.push(shape(i => {
       const k = rnd();
-      if (k < .035) { const u = rnd(); return [.02 + .05*u + (rnd() - .5)*.02, .78 + .2*u, (rnd() - .5)*.02, 3]; }
-      if (k < .075) { const a = rnd()*TAU, r = Math.sqrt(rnd()), lx = Math.cos(a)*r*.17; return [.13 + lx*.9, .9 + lx*.35, Math.sin(a)*r*.06, 4]; }
-      let y, r; do { y = -.94 + rnd()*1.73; r = pearR(y); } while (rnd()*.66 > r);
-      const a = rnd()*TAU, x = Math.cos(a)*r, z = Math.sin(a)*r, L = lit(Math.cos(a), 0, Math.sin(a));
-      return [x, y, z, x > .25 && rnd() < .45 ? 2 : (L > .55 && rnd() < .5 ? 5 : (rnd() < .5 ? 0 : 1))];
+      if (k < .04) { const u = rnd(); return [.02 + (rnd() - .5)*.05, .68 + .3*u, (rnd() - .5)*.05, 3]; }
+      if (k < .1) { const a = rnd()*TAU, q = Math.sqrt(rnd()), u = Math.cos(a)*q*.36, v = Math.sin(a)*q*.1; return [.26 + u*.86 - v*.51, .97 + u*.51 + v*.86, (rnd() - .5)*.05, 4]; }
+      const th = Math.atan2(D[i*3+2], D[i*3]), y = pearY((D[i*3+1] + 1)*.5), r = pearR(y), cs = Math.cos(th), L = lit(cs, 0, Math.sin(th));
+      return [cs*r, y, Math.sin(th)*r, cs > .3 && rnd() < .4 ? 2 : (L > .55 && rnd() < .55 ? 5 : (rnd() < .5 ? 0 : 1))];
     }, [[196,214,78],[163,192,55],[232,178,74],[112,82,38],[92,160,58],[240,245,190]], [180,205,80]));
-    // blackberry: clustered drupelets with a green calyx
-    const C = [], M = 84, GA = Math.PI*(3 - Math.sqrt(5));
-    for (let j = 0; j < M; j++) { const y = 1 - (j + .5)*2/M, q = Math.sqrt(1 - y*y), th = j*GA; C.push([Math.cos(th)*q*.7, y*.88, Math.sin(th)*q*.7]); }
-    shapes.push(shape(() => {
-      if (rnd() < .05) { const a = rnd()*TAU, r = rnd()*.32, sep = Math.pow(Math.abs(Math.cos(a*2.5)), 3); return [Math.cos(a)*r*(.35 + .65*sep), .9 + (rnd() - .5)*.04, Math.sin(a)*r*(.35 + .65*sep), 4]; }
-      const c = C[(rnd()*M) | 0], n = Math.hypot(c[0], c[1], c[2]) || 1, d = dir(), o = [d[0] + c[0]/n*1.3, d[1] + c[1]/n*1.3, d[2] + c[2]/n*1.3], on = Math.hypot(o[0], o[1], o[2]) || 1;
-      return [c[0] + o[0]/on*.17, c[1] + o[1]/on*.17, c[2] + o[2]/on*.17, shade(lit(o[0]/on, o[1]/on, o[2]/on), 3, 2, 0, 1)];
-    }, [[46,12,44],[72,24,66],[118,52,106],[214,178,226],[86,128,54]], [110,40,100]));
-    // orange: dimpled peel
-    shapes.push(shape(() => { const d = dir(), th = Math.atan2(d[2], d[0]), ph = Math.acos(d[1]), r = .92*(1 + .018*Math.sin(34*th)*Math.sin(34*ph)); return [d[0]*r, d[1]*r, d[2]*r, shade(lit(...d), 3, 1, 0, 2)]; },
-      [[240,128,24],[250,160,52],[214,98,14],[255,214,160]], [250,140,40]));
-    // tomato: lobed and flattened, green star on top
-    shapes.push(shape(() => {
-      if (rnd() < .05) { const a = rnd()*TAU, sep = Math.pow(Math.abs(Math.cos(a*2.5)), 4), r = rnd()*.42*(.3 + .7*sep); return [Math.cos(a)*r, .74 + (rnd() - .5)*.03, Math.sin(a)*r, 4]; }
-      const d = dir(), th = Math.atan2(d[2], d[0]), r = .92*(1 + .05*Math.cos(5*th)*(1 - Math.abs(d[1])));
-      return [d[0]*r, d[1]*r*.8, d[2]*r, shade(lit(...d), 3, 1, 0, 2)];
-    }, [[214,44,34],[236,78,58],[170,26,26],[255,196,178],[74,142,52]], [230,60,40]));
-    // red onion: striped layers, pointed top, roots
-    shapes.push(shape(() => {
-      if (rnd() < .03) { const a = rnd()*TAU, r = rnd()*.18; return [Math.cos(a)*r, -.86 - rnd()*.12, Math.sin(a)*r, 3]; }
-      const d = dir(), tip = d[1] > .45 ? Math.pow(1 - (d[1] - .45)/.55, .8)*.55 + .45 : 1, th = Math.atan2(d[2], d[0]), L = lit(...d);
-      return [d[0]*.9*tip, d[1]*.9 + (d[1] > .45 ? (d[1] - .45)*.5 : 0), d[2]*.9*tip, L > .82 || Math.sin(11*th) > .72 ? 2 : (rnd() < .5 ? 0 : 1)];
-    }, [[140,36,104],[176,70,140],[232,196,222],[140,110,74]], [160,50,130]));
-    // pomegranate: faceted body with a crown
-    shapes.push(shape(() => {
-      if (rnd() < .06) { const k = (rnd()*6) | 0, a = k/6*TAU + (rnd() - .5)*.25, h = rnd(), r = .16 + .06*h; return [Math.cos(a)*r, .86 + h*.2, Math.sin(a)*r, 4]; }
-      const d = dir(), r = .92*(1 + .02*Math.cos(6*Math.atan2(d[2], d[0])));
-      return [d[0]*r, d[1]*r*.95, d[2]*r, shade(lit(...d), 3, 1, 0, 2)];
-    }, [[168,22,44],[200,46,68],[128,14,32],[255,176,186],[150,36,48]], [190,40,60]));
+    // blackberry: union of 16 fat drupelet spheres, banded hard so every lobe reads
+    const M = 16, GA = Math.PI*(3 - Math.sqrt(5)), RR = .42, C = [], CL = [];
+    for (let j = 0; j < M; j++) {
+      const y = 1 - (j + .5)*2/M, q = Math.sqrt(Math.max(0, 1 - y*y)), th = j*GA, v = [Math.cos(th)*q*.52, y*.6, Math.sin(th)*q*.52];
+      C.push(v); CL.push(v[0]*v[0] + v[1]*v[1] + v[2]*v[2]);
+    }
+    shapes.push(shape(i => {
+      if (rnd() < .045) { const a = rnd()*TAU, sep = Math.pow(Math.abs(Math.cos(a*2.5)), 3), r = .12 + rnd()*.26*(.3 + .7*sep); return [Math.cos(a)*r, .98 + (rnd() - .5)*.05, Math.sin(a)*r, 4]; }
+      const ax = D[i*3], ay = D[i*3+1], az = D[i*3+2];
+      let bt = 0, bj = 0;
+      for (let j = 0; j < M; j++) {
+        const dc = C[j][0]*ax + C[j][1]*ay + C[j][2]*az, disc = dc*dc - CL[j] + RR*RR;
+        if (disc <= 0) continue;
+        const tt = dc + Math.sqrt(disc);
+        if (tt > bt) { bt = tt; bj = j; }
+      }
+      if (bt <= 0) bt = .58;
+      const c = C[bj], L = lit((ax*bt - c[0])/RR, (ay*bt - c[1])/RR, (az*bt - c[2])/RR);
+      return [ax*bt, ay*bt, az*bt, L > .52 ? 3 : (L > .04 ? 2 : (L > -.42 ? 1 : 0))];
+    }, [[26,4,28],[58,14,54],[132,58,120],[236,210,244],[86,128,54]], [110,40,100]));
+    // orange: coarse peel pitting, squat, broad leaf so it never reads as a plain ball
+    shapes.push(shape(i => {
+      const k = rnd();
+      if (k < .055) { const a = rnd()*TAU, q = Math.sqrt(rnd()), u = Math.cos(a)*q*.42, v = Math.sin(a)*q*.115; return [.06 + u*.9 - v*.44, 1.0 + u*.44 + v*.9, (rnd() - .5)*.05, 4]; }
+      if (k < .068) { const a = rnd()*TAU, r = rnd()*.06; return [Math.cos(a)*r, .88 + rnd()*.12, Math.sin(a)*r, 5]; }
+      const ax = D[i*3], ay = D[i*3+1], az = D[i*3+2], th = Math.atan2(az, ax), ph = Math.acos(clamp(ay, -1, 1));
+      const r = .94*(1 + .042*Math.sin(19*th)*Math.sin(19*ph));
+      return [ax*r, ay*r*.9, az*r, shade(lit(ax, ay, az), 3, 1, 0, 2)];
+    }, [[242,130,22],[252,168,58],[204,86,8],[255,224,176],[92,160,58],[124,88,42]], [250,140,40]));
+    // tomato: squat and five-lobed, green star riding proud of the shoulder
+    shapes.push(shape(i => {
+      const k = rnd();
+      if (k < .16) { const u = rnd(), a = ((rnd()*5)|0)/5*TAU + (rnd() - .5)*.42*(1 - u*.55), r = .12 + u*.86; return [Math.cos(a)*r, .76 - u*.34, Math.sin(a)*r, 4]; }
+      if (k < .18) { const a = rnd()*TAU, r = rnd()*.045; return [Math.cos(a)*r, .8 + rnd()*.16, Math.sin(a)*r, 5]; }
+      const ax = D[i*3], ay = D[i*3+1], az = D[i*3+2], th = Math.atan2(az, ax);
+      const r = .97*(1 + .075*Math.cos(5*th)*(1 - Math.abs(ay)*.75));
+      return [ax*r, ay*r*.7, az*r, shade(lit(ax, ay, az), 3, 1, 0, 2)];
+    }, [[216,36,28],[242,78,58],[162,18,18],[255,200,182],[74,164,50],[104,140,56]], [230,60,40]));
+    // red onion: round base, fat lower bulb drawn up into a papery neck, pale stripes
+    const onNeck = .93*Math.sqrt(1 - Math.pow(.72/.96, 2));
+    const onR = y => y <= .72 ? .93*Math.sqrt(Math.max(0, 1 - Math.pow(y/.96, 2))) : onNeck*Math.pow(Math.max(0, 1 - (y - .72)/.34), .75);
+    const onY = profile(onR, -.955, 1.04);
+    shapes.push(shape(i => {
+      const k = rnd();
+      if (k < .03) { const a = rnd()*TAU, u = rnd(); return [Math.cos(a)*.2*u, -.9 - (1 - u)*.14 - rnd()*.04, Math.sin(a)*.2*u, 3]; }
+      if (k < .062) { const a = rnd()*TAU, u = rnd(); return [Math.cos(a)*.06*(1 - u*.7)*(.4 + rnd()), 1.02 + u*.24, Math.sin(a)*.06*(1 - u*.7)*(.4 + rnd()), 3]; }
+      const th = Math.atan2(D[i*3+2], D[i*3]), y = onY((D[i*3+1] + 1)*.5), r = onR(y), cs = Math.cos(th), L = lit(cs, 0, Math.sin(th)), st = Math.sin(8*th);
+      return [cs*r, y, Math.sin(th)*r, st > .12 ? 2 : (st < -.55 ? 0 : (L > .62 && rnd() < .35 ? 2 : (rnd() < .5 ? 1 : 0)))];
+    }, [[126,26,94],[178,64,144],[244,214,234],[150,120,84]], [160,50,130]));
+    // pomegranate: six-sided body under six separated crown spikes
+    shapes.push(shape(i => {
+      if (rnd() < .1) { const u = rnd(), a = ((rnd()*6)|0)/6*TAU + (rnd() - .5)*.26*(1 - u*.85), r = .12 + u*.36; return [Math.cos(a)*r, .92 + u*.2 - u*u*.04, Math.sin(a)*r, 4]; }
+      const ax = D[i*3], ay = D[i*3+1], az = D[i*3+2], r = .95*(1 + .032*Math.cos(6*Math.atan2(az, ax)));
+      return [ax*r, ay*r*.95, az*r, shade(lit(ax, ay, az), 3, 1, 0, 2)];
+    }, [[172,18,44],[208,46,68],[124,10,28],[255,182,192],[168,54,62]], [190,40,60]));
     // Earth: the same land points as the hero globe, plus faint ocean
     const bin = atob("AAAAAAAAAAAEACQgISEJGQhIQBJCEBAQkJCkBKQgJyEICQjASAZCNDABkIQMAGhgBwMIGYDYxA4AMTMhkZhMyOZiRxJ5mIXMzWZk8zlpi3vcW2b+txbUvbfd/e/tpX9/u3ve187+//b2v7e9v67tbXv/e3vf287f/nbyv7+Vvb7tZX9/K3lf3sre3nbyv7+Vvf7tZW9vKzt92sre/nbys7+Vrb7sZWd/KVlZy8pO/nIys7+UnJzmZSczOVkJzctOZnOyk7uUvIzmZac3OfkJzc9ORnOyk5uc/ITmZ6d3OdmJzM9u4nPz05mc3ITm5zczOfnpzc9uVnNz05uc3OTm5zc1Ofnpzc9ucnNz25qc3PTm5zc9Obnpzc5uenNz05qc3OTm5yc1ObnNzU5uenNTk5qc3Pbmpyc1ObntzU5OenNTk56c3Pbmpyc1ObnJzU5ue3NTk5qM3OTmpyc1OanJzU5ucjNTm5qc3OTmpyc1GanJz0ZucjNTk5qMzOTnoyc1GanJzUZGcjMTk5qM1PTnIyM1GYnJzUZGanMRk5qMxPTmIyM1GYjJzU5OanMRkZqcxOTnJyc1GYnJzU5CajMTkZqc1OTmJyM1OYmIzU5CajOTE5qcxORmJiE1GYmIzU5CcnOTEpqcxMRmJyE1GYnIzU5KYjOTkJqM1MRmIyE5GajITEZqYjPRkJiM1MRnIyU5GeiITUZqYjPRkJiM1MQnoyUxGajIT0ZqYhPRkpiM1GQnoyUxCajIT0ZqYhNRkpic1GSnoyUxCajJTU5qchNRkpiU1GSnpyUxCanJTE5qclNTkpiE1OSmpSUxKSnJTEpqclNTkpiUlOSkpzU5KanJTEpKMlJSkpiUFOSkpSU5KSnJTEpKclJTmpiUlOSkpSU5KSlJTEoKclJSmoyUlKampQU5KSnFTEpKclJSgpyUlKSmpSU5KSlJREpKUlJSgpwUlKCmJSU4KSlJTApKUVNSgpwUlKSjJSUoKSlJTApKUlFSkpQUlKSnBSU4KSlJTApKU1FSkpAUlKSmBSUpoKlJSApKUlNCkpAUlKSmBSUpIKlNSApKQkMCmpAQ0KSmBSUhIaFNSCpKQkMCkpAQUKSkBSUhIYFNSAgqUkIKkpQQUKSkBTUhIYVNSCgpUkICmpCQ4KakBBUpIQFNSAhoUkICmpAQgKakBBQpIQENSAhYUlICCpQQgKakBCQpIQEJSAhYU0ICAhRQgKakBCQpoQEBSghAU1ICEhRQgISkBCwpoQEJCihAUlICFhRQgIClBCAoIQEJCihAQlICEhQQgISFBCAoKQEJCihAQFKCEhAQgISFFCCgKQEJCkhAQkKCEFAQgIWFFCCgKQEICEhAQkqKEFSUgIWUBCChIQEIKEhAQsqKEFCUgIQUJCChJQUIKkhBQkoCEFCSgoQUJSChZQEIKkhAQooCEFCSgIQVJSChZQEIKElAQooSEFCSgIQUJKAhBQEIKElAQgqSkFCCgIQUJKAhBQEoKElAAgoSUBCCgBUVJKABBUAoKEFAAgoQUBCCgBUUIKABBQAoIEFACoqQUACCoBUUIKABBUgoAEFACooQUACCgBUQIKAFBUgoAEFQCooQUACCoBUQIKAFRQgqAEFQCogQUAKCoBUQIKAFRQooAFFQCogQUAKCgBUQIKgFRQgoAEFQCogQUAKigBQAIKgFRAgoAUFAiohQVAKigBQAqKBFRAgoEUFACghQVAKigBQIqKAFRCgqEVFACgRUUCKiEBUIoKAFBCgqEVEICgRUcAKCFBUIoKQFBiooAUEICgRQUgKDFBUAoIQFAigpAUGICoRQUgKDFRwAoIQFAigpAUGICgBQQgKDFBSAoMQFQigpAVGKDgBQQgKhFBSAqMQHACghAVCKCkBQYgOBFBSAqIUFACghAUCKikBQQiKAFRCAoEUFACgxAUAKCkBQQqKAFBiAoAUFICghAUAKCkBQAoKAFBCAoAUFICghQUAKCEBQIoKAFBCAoAUFICgBQUAKCEBQAoKBFBCAoAUEICgRQUCKCEBQAoKBFACgoAUEICgRQUKKCEBQAoKBFACgoAUEICgBQUKKAFBQAoKRFAigoUUEIigBQUKKBFBQAoIRFAigoUUAIigBQUqKBFBQIoARFACgoUUCIigRQEqKBFBQIoARFACgoUUCIigRQAiKBFBQooEZFAigIUUCIigRQAiKBFBQooERFAigBUUCIigRQIiKBFAQooERFAigBEUCIihRQIiKBFAAooERFAigREUCKghRQIiKBFQiooERFAjgREUCKgBRQIiKBFQiIoEVFCigREUCKhBRQIiKBFQgIoEVACigREUCKhARQIiKBFAgIoEVCCigREUCKhARQIiOBFAgIoEVCAigREUCKBARQIiEBFAgIoEVCAigREcCKBARQIqEBFAgIoEVCAigREYCKBARQIqEBFAiIoEUCAigREICKBARQIqEBFAiIwEUCAigREICKBARAIoEBFAiIwEUCAigREICKBARAIoEBFAiIQEUCAiARQICKBARgIoEBFAiIQEUCAiARQICKBAQgAoEBFAiAQAUCAiABQIAKBAQgAoEBEACAQAUCAiABAIAKBEQgAgEAEACAQAQAAjABAIAIAAAgAgEAEACAQAQAABABAIQIAAAgAgAAEACAQAQAABABAIAIAEAgAgAAEACAQgQAABABAAAIAEABAgAAAACAAAQAAAABAAAIAAABAgAAAACAAAQAAAABAAAIAAAAAgAAAACAAAQAAAABAAAAAAABAgAACAAAAAQAAAABAAAEAAABAgAAAACAAAAAAAABAAAAAAABAgAAAACAAgQAAAABAAAAAAABAgAAAACAAgAAAAABAAAAAAABAgAAAACAAAAAAAABAAAAAEAAAAAAAACAAAAAAAABAAAAAEAAAAAAAACAAAAAAAABAAAAAEAAAAAAAACAAAAAAAAAAAAAAEAAAAAAAACAAAAAAAAAAAAAAEAAAAAAAACAAAAAIAAAAAAAAEAAAAAQAAAAAAAAIAAAAAgAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIAAAAAAAAESgIAEBKQgJQEJCAlISEoCUhESkJSUBKSnJSEpKOlJSkpaWlHSlpaU9LWnpa0tKelrS0t6WnPT1p6e/Pyn5+8/Pfn5789efnrz99+fvvz15++/vXn5789/fnv799/f/v/397//////w=="), NN = 20000, GA2 = Math.PI*(3 - Math.sqrt(5)), land = [], sea = [];
     for (let j = 0; j < NN; j++) { const py = 1 - (j + .5)*2/NN, r = Math.sqrt(Math.max(0, 1 - py*py)), th = j*GA2, v = [Math.cos(th)*r, py, Math.sin(th)*r]; (((bin.charCodeAt(j >> 3) >> (7 - (j & 7))) & 1) ? land : sea).push(v); }
-    for (let j = land.length - 1; j > 0; j--) { const k = (rnd()*(j + 1)) | 0; const tmp = land[j]; land[j] = land[k]; land[k] = tmp; }
-    const nl = Math.min(land.length, Math.round(N*.72));
-    shapes.push(shape(i => { if (i < nl) return [land[i][0], land[i][1], land[i][2], 0]; const v = sea[(rnd()*sea.length) | 0]; return [v[0], v[1], v[2], 1]; }, [[237,233,225],[46,98,170]], [70,120,210]));
-    burst = new Float32Array(N*3); jit = new Float32Array(N);
-    for (let i = 0; i < N; i++) { const d = dir(), r = 1.6 + rnd()*2.4; burst[i*3] = d[0]*r; burst[i*3+1] = d[1]*r; burst[i*3+2] = d[2]*r; jit[i] = .55 + rnd()*.9; }
+    // bucket by latitude so a particle lands on Earth near the ray it already rode in on
+    const LB = 40, lb = Array.from({length: LB}, () => []), sb = Array.from({length: LB}, () => []);
+    const band = y => Math.min(LB - 1, Math.max(0, ((1 - y)*.5*LB) | 0));
+    for (const v of land) lb[band(v[1])].push(v);
+    for (const v of sea) sb[band(v[1])].push(v);
+    shapes.push(shape(i => {
+      const b = band(D[i*3+1]), wl = rnd() < .72;
+      let arr = wl ? lb[b] : sb[b], isL = wl;
+      if (!arr.length) { arr = wl ? sb[b] : lb[b]; isL = !wl; }
+      if (!arr.length) return [D[i*3], D[i*3+1], D[i*3+2], 1];
+      const v = arr[(rnd()*arr.length) | 0];
+      return [v[0], v[1], v[2], isL ? 0 : 1];
+    }, [[237,233,225],[46,98,170]], [70,120,210]));
+    const bp = new Float32Array(N*3), br = new Float32Array(N);
+    for (let i = 0; i < N; i++) { const r = 1.6 + rnd()*2.4; bp[i*3] = D[i*3]*r; bp[i*3+1] = D[i*3+1]*r; bp[i*3+2] = D[i*3+2]*r; br[i] = r; }
+    burst = {p: bp, rad: br};
     warp = Array.from({length: 260}, () => ({a: rnd()*TAU, d: rnd(), v: .7 + rnd()*1.7, w: rnd()}));
   }
   function skip(){ if (handed) return; t0 = performance.now() - T_HAND*1000; forceEarth = true; }
@@ -692,15 +747,17 @@ const Loader = (() => {
     const w = (t < 2.9 && !forceEarth) ? 9 : (t < T_HAND ? lerp(9, .07, ease(clamp((t - 2.9)/(T_HAND - 2.9), 0, 1))) : .07);
     rot -= (handed ? .07 : w)*dt;
     const hk = handed ? ease(clamp((t - T_HAND)/MOVE, 0, 1)) : 0;
-    const cx = handed ? lerp(W/2, pose.x, hk) : W/2, cy = handed ? lerp(H/2, pose.y, hk) : H/2, Rs = handed ? lerp(R0, pose.r, hk) : R0;
+    // the foods all ride at one small size; only the globe grows, then it settles onto the hero globe
+    const fs = forceEarth ? 1 : lerp(FOOD_S, 1, earthy);
+    const cx = handed ? lerp(W/2, pose.x, hk) : W/2, cy = handed ? lerp(H/2, pose.y, hk) : H/2, Rs = handed ? lerp(R0, pose.r, hk) : R0*fs;
     ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
     ctx.globalCompositeOperation = "source-over";
     ctx.fillStyle = `rgba(4,5,9,${handed ? 1 : (earthy > .5 ? .5 : .24)})`; ctx.fillRect(0, 0, W, H);
     ctx.globalCompositeOperation = "lighter";
     if (t < 1.4) {
-      const f = 1 - t/1.4, D = Math.hypot(W, H)*.62; ctx.lineCap = "round";
+      const f = 1 - t/1.4, DD = Math.hypot(W, H)*.62; ctx.lineCap = "round";
       for (const q of warp) {
-        const d0 = (q.d + t*q.v*1.5) % 1, r0 = d0*D, r1 = r0 + (14 + 110*d0)*f, ca = Math.cos(q.a), sa = Math.sin(q.a);
+        const d0 = (q.d + t*q.v*1.5) % 1, r0 = d0*DD, r1 = r0 + (14 + 110*d0)*f, ca = Math.cos(q.a), sa = Math.sin(q.a);
         ctx.strokeStyle = `rgba(206,222,255,${(.12 + .55*q.w)*f*d0})`; ctx.lineWidth = .5 + 1.6*d0;
         ctx.beginPath(); ctx.moveTo(W/2 + ca*r0, H/2 + sa*r0); ctx.lineTo(W/2 + ca*r1, H/2 + sa*r1); ctx.stroke();
       }
@@ -709,10 +766,14 @@ const Loader = (() => {
     const gr = ctx.createRadialGradient(cx, cy, Rs*.15, cx, cy, Rs*2.2);
     gr.addColorStop(0, `rgba(${gc},${.22*(1 - hk)})`); gr.addColorStop(1, "rgba(0,0,0,0)"); ctx.fillStyle = gr; ctx.fillRect(0, 0, W, H);
     const tilt = .22 + .14*(forceEarth ? 1 : earthy), ct = Math.cos(tilt), st = Math.sin(tilt), c = Math.cos(rot), sn = Math.sin(rot);
-    const bump = forceEarth ? 0 : Math.sin(Math.PI*s)*(A ? .42 : .15), PA = A ? A.p : burst, PB = B.p, sz0 = clamp(Rs/150, .8, 1.9), paths = new Map();
+    const PA = A ? A.p : burst.p, RA = A ? A.rad : burst.rad, PB = B.p, RB = B.rad, sz0 = clamp(Rs/135, .85, 2), paths = new Map();
     for (let i = 0; i < N; i++) {
-      const i3 = i*3, j = 1 + bump*jit[i];
-      const x = lerp(PA[i3], PB[i3], es)*j, y = lerp(PA[i3+1], PB[i3+1], es)*j, z = lerp(PA[i3+2], PB[i3+2], es)*j;
+      const i3 = i*3;
+      let x = lerp(PA[i3], PB[i3], es), y = lerp(PA[i3+1], PB[i3+1], es), z = lerp(PA[i3+2], PB[i3+2], es);
+      // hold each particle at the radius the two shapes actually have, so the cloud
+      // never sags inward mid-morph and never balloons: it just turns inside out
+      const hv = Math.sqrt(x*x + y*y + z*z);
+      if (hv > 1e-4) { const m = Math.min(lerp(RA[i], RB[i], es)/hv, 2.4); x *= m; y *= m; z *= m; }
       const x1 = x*c - z*sn, z1 = x*sn + z*c, y2 = y*ct - z1*st, z2 = y*st + z1*ct;
       const lv = z2 > .3 ? 2 : (z2 > -.25 ? 1 : 0);
       if (lv === 0 && earthy > .9) continue;
